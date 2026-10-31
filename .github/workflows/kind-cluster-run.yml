@@ -42,7 +42,15 @@ jobs:
           chmod +x kind kubectl
           echo "$bin" >> "$GITHUB_PATH"
       - name: Build the Jazzy image from the PR's ROS2/Dockerfile
-        run: docker build --pull --file ROS2/Dockerfile --tag ros-jazzy-lab:local .
+        # The apt pins in ROS2/Dockerfile are amd64 build-farm versions; the arm64 builds of the
+        # same source versions carry different timestamps, so the arm64 leg overrides them.
+        run: |
+          args=()
+          if [ "${{ matrix.arch }}" = arm64 ]; then
+            args=(--build-arg ROS_DEMO_NODES_CPP_VERSION=0.33.11-1noble.20260921.041131
+                  --build-arg ROS2_PULSE_VERSION=0.5.0-1noble.20260914.160742)
+          fi
+          docker build --pull "${args[@]}" --file ROS2/Dockerfile --tag ros-jazzy-lab:local .
       - name: Create 3-node kind cluster (#97 profile)
         run: kind create cluster --config .github/ci-kind/kind-3node.yaml --wait 180s
       - name: Load image into all nodes

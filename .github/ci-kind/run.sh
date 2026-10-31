@@ -3,6 +3,7 @@
 # and record placement, restarts, memory, logs and the /chatter series from each pulse-export
 # sidecar through kubectl port-forward.
 #   phase a: the manifest exactly as in the PR (default Fast DDS discovery, scheduler placement)
+#   phase s: CI-only, same manifest with both pods pinned to one worker
 #   phase b: CI-only overlay, not part of the PR: a Fast DDS discovery server in the same
 #            namespace, ROS_DISCOVERY_SERVER on both ROS containers, talker and listener pinned
 #            to different workers (same approach as #97)
@@ -88,6 +89,16 @@ log "phase a: hold another 120 s to watch for restarts or memory growth"
 sleep 120
 snapshot a2
 
+log "phase s (CI-only): unchanged manifest, default discovery, both pods pinned to the same worker"
+for d in pulse-talker pulse-listener; do
+  k -n "$NS" patch "deploy/$d" --type merge -p '{"spec":{"template":{"spec":{"nodeSelector":{"ros2k8s-demo/role":"talker"}}}}}'
+done
+k -n "$NS" rollout status deploy/pulse-talker --timeout=180s
+k -n "$NS" rollout status deploy/pulse-listener --timeout=180s
+date -u +"phase s ready %FT%TZ" | tee -a "$OUT/timeline.txt"
+sleep 60
+snapshot s
+
 log "phase b (CI-only overlay): discovery server + ROS_DISCOVERY_SERVER + different workers"
 k apply -f .github/ci-kind/discovery-server.yaml
 k -n "$NS" rollout status deploy/discovery-server --timeout=180s
@@ -105,7 +116,7 @@ snapshot b
 log "summary"
 {
   cat "$OUT/timeline.txt"
-  for p in a a2 b; do
+  for p in a a2 s b; do
     echo "--- phase $p"
     cat "$OUT/$p-restarts.txt"
     for d in pulse-talker pulse-listener; do
@@ -120,9 +131,12 @@ log "summary"
 # Gate only on what the PR claims: pods run, port-forward works, the talker sidecar serves
 # /chatter publishes. Listener callbacks are required only in the overlay phase.
 rc=0
+positive() { # file metric
+  awk -v m="$2{" 'index($1, m) == 1 && index($1, "topic=\"/chatter\"") && $2 + 0 > 0 { ok = 1 } END { exit !ok }' "$1"
+}
 grep -q 'port_forward_ok=0' "$OUT/port-forward-results.txt" && { echo "FAIL: a port-forward scrape failed"; rc=1; }
-grep -Eq 'ros2_pulse_topic_publish_rate_hertz\{[^}]*topic="/chatter"[^}]*\} [1-9.]' "$OUT/a-pulse-talker-metrics.txt" \
+positive "$OUT/a-pulse-talker-metrics.txt" ros2_pulse_topic_publish_rate_hertz \
   || { echo "FAIL: phase a talker has no positive /chatter publish rate"; rc=1; }
-grep -Eq 'ros2_pulse_topic_receive_rate_hertz\{[^}]*topic="/chatter"[^}]*\} [1-9.]' "$OUT/b-pulse-listener-metrics.txt" \
+positive "$OUT/b-pulse-listener-metrics.txt" ros2_pulse_topic_receive_rate_hertz \
   || { echo "FAIL: phase b listener has no positive /chatter receive rate"; rc=1; }
 exit "$rc"
