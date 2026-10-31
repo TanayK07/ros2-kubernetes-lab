@@ -1,0 +1,63 @@
+# CI-only overlay for the PR #115 cluster run, adapted from #97: a Fast DDS discovery server in
+# the pilot namespace so the two pods can discover each other across workers.
+apiVersion: v1
+kind: Service
+metadata:
+  name: discovery-server
+  namespace: ros2-pulse-pilot
+spec:
+  selector:
+    app: discovery-server
+  ports:
+    - name: discovery
+      protocol: UDP
+      port: 11811
+      targetPort: 11811
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: discovery-server
+  namespace: ros2-pulse-pilot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: discovery-server
+  template:
+    metadata:
+      labels:
+        app: discovery-server
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: discovery-server
+          image: ros-jazzy-lab:local
+          imagePullPolicy: Never
+          command: ["/bin/sh", "-c"]
+          args: ["ulimit -n 1024 && exec /ros_entrypoint.sh fast-discovery-server -i 0 -l 0.0.0.0 -p 11811"]
+          env:
+            - name: ROS_DOMAIN_ID
+              value: "42"
+          ports:
+            - containerPort: 11811
+              protocol: UDP
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "grep -qi ':2E23 ' /proc/net/udp"]
+            initialDelaySeconds: 2
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
